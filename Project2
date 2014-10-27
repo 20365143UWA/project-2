@@ -1,0 +1,257 @@
+/*
+ * Project2.c
+ *
+ * A modification of breather.c as provided by Amitava Datta
+ * for the unit CITS3402 at UWA.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <sys/time.h>
+#include <omp.h>
+
+#define chainlngth 100
+#define nsprngs (chainlngth+1)
+#define nprntstps 10001 // Number of output lines
+#define dt 0.1 // Time step
+#define beta 0.7 // Beta is the nonlinear coefficient
+#define alpha .16 // Alpha is the linear coefficient
+/*
+#define halfchain 50 // Ignore; not used here
+#define nmode 100  // Ignore; not used here
+#define pi 3.14159 // Ignore; not used here
+#define spcng 1.0 // Just to make it explicit; not used in the program
+
+void accel(double *, double *);
+double initialize(double *); // Ignore; not used here
+double normalmode(int ,double *, double *, double *); // Ignore; not used here
+*/
+
+int main() {
+	struct timeval start, end;
+	double delta;
+	double a = alpha;
+	double b = beta;
+	printf("Alpha is:  %lf \n",  a);
+	printf("Beta is :  %lf \n", b);
+
+	FILE *fp, *fp1, *fp2, *fp3, *fp5, *fp6, *fp7, *fp8;
+//	int i, j, k, n,
+	int n1, prncnt, prntstps;
+	double v[chainlngth], x[chainlngth], tke, tpe, te;   //, ke1, omegak[nmode]; //REMOVED
+	double acc[chainlngth], ke[chainlngth], pe[nsprngs], fac, y[chainlngth];
+	double dx, hdt, hdt2, alphaby4, cmass;   //, cmom, t, t1, twopi, twopisqr; //REMOVED
+
+	prntstps = (int) (1.0 / dt);
+	gettimeofday(&start, NULL);
+	alphaby4 = beta / 4.0;
+	fp = fopen("toten.dat","w");
+	fp1 = fopen("strsh.dat","w");
+	fp3 = fopen("velsh.dat","w");
+	fp5 = fopen("cmass.dat","w");
+	fp2 = fopen("restart.dat","w");
+	fp6 = fopen("ke.dat","w");
+	fp7 = fopen("acce.dat","w");
+	fp8 = fopen("pe.dat","w");
+
+#pragma omp parallel
+{
+// INITLOOP1
+#pragma omp for
+	for(int  i = 0; i < chainlngth; i++) {
+		x[i] = 0.0;
+		acc[i] = 0.0;
+		v[i] = 0.0;
+	}
+
+#pragma omp single
+{
+/* Initial perturbation at the center of the chain and
+ * it is a double particle perturbation (EVEN Parity) */
+	x[50] = -0.98;
+	x[51] = +0.98;	// Even Parity
+
+	dx = tke = tpe = te = 0.0;
+}
+
+// INITLOOP2
+#pragma omp for
+	for (int i = 0; i < chainlngth; i++) {
+		ke[i] = 0.5 * v[i] * v[i];
+		tke += ke[i];
+		if (i-1 == -1) {
+			dx = x[i];
+		} else {
+			dx = x[i] - x[i-1];
+		}
+		fac = dx * dx;
+		tpe += pe[i] = alpha * 0.5 * fac + alphaby4 * fac * fac;
+	}
+// At this point, i is the value of chainlngth.
+
+#pragma omp single
+{
+	dx = -x[chainlngth - 1];
+	fac = dx * dx;
+	pe[chainlngth] = alpha * 0.5 * fac + alphaby4 * fac * fac;
+}
+
+// INITSECTIONS
+#pragma omp sections
+{
+	for (int i=0; i < chainlngth; i++)
+		fprintf(fp1,"%.10f\t", x[i]);
+	fprintf(fp1,"\n");
+
+#pragma omp section
+{
+	for (int i = 0; i < chainlngth; i++)
+		fprintf(fp3,"%.10f\t", v[i]);
+	fprintf(fp3,"\n");
+}
+#pragma omp section
+{
+	for (int i = 0; i < chainlngth; i++)
+		fprintf(fp6,"%.10f\t", ke[i]);
+	fprintf(fp6,"\n");
+}
+#pragma omp section
+{
+	for (int i = 0; i < chainlngth; i++)
+		fprintf(fp7,"%.10f\t", acc[i]);
+	fprintf(fp7,"\n");
+}
+#pragma omp section
+{
+	for (int i = 0; i < chainlngth; i++)
+			fprintf(fp8,"%.10f\t", pe[i]);
+	fprintf(fp8,"%.10f\n", pe[chainlngth]);
+}
+#pragma omp section
+{
+	tpe += pe[chainlngth];
+	te = tpe + tke;
+	fprintf(fp,"%d\t%.10f\n", 0, te);
+	hdt = 0.5 * dt;
+	hdt2 = dt * hdt;
+	n1 = 1;
+}
+
+} // End of sectioned area
+} // End of parallel area
+
+// From this point on, the value of i = 0
+
+// MAINLOOP
+	for (int n = 1; n < nprntstps;) {
+
+#pragma omp parallel
+{
+
+// MAIN1
+#pragma omp for firstprivate(v, acc)
+			for (int i = 0; i < chainlngth; i++) {
+				x[i] += dt * v[i] + hdt2 * acc[i];
+			}
+#pragma omp for firstprivate(acc)
+			for (int i = 0; i < chainlngth; i++) {
+				v[i] += hdt * acc[i];
+			}
+
+// MAIN2 / ACCEL
+#pragma omp for firstprivate(x)
+			for (int i = 0; i < chainlngth; i++) {
+				double dxi, twodxi, dxipl1, dximn1, fac, fac1, fac2, fac13, fac23;
+				int j = i - 1;
+				int k = i + 1;
+				if (j == -1) {
+					dximn1 = 0.0;
+				} else {
+					dximn1 = x[j];
+				}
+				if (k == chainlngth) {
+					dxipl1 = 0.0;
+				} else {
+					dxipl1 = x[k];
+				}
+				dxi = x[i];
+				twodxi = 2.0 * dxi;
+				fac = dxipl1 + dximn1 - twodxi;
+				fac1 = dxipl1 - dxi;
+				fac2 = dxi - dximn1;
+				fac13 = fac1 * fac1 * fac1;
+				fac23 = fac2 * fac2 * fac2;
+				acc[i] = alpha * fac + beta * (fac13 - fac23);
+			}
+
+// MAIN3
+#pragma omp for firstprivate(acc)
+			for (int i = 0; i < chainlngth; i++) {
+				v[i] += hdt * acc[i];
+			}
+
+}// End of parallel section
+
+
+/* Kinetic energies */
+
+	prncnt = n1 / prntstps;  //percent completion
+	if (prncnt == 1) {  //if 100% done, print all
+		tke = tpe = te = dx = 0.0;  //reset all variables
+		cmass = 0.0;
+		for (int j = 0; j < chainlngth; j++) {
+			ke[j] = 0.5 * v[j] * v[j];
+			fprintf(fp6,"%.10f\t",ke[j]);
+			tke += ke[j];
+			int k = j-1;
+			if (k == -1) {
+				dx = x[j];
+			} else {
+				dx = x[j] - x[k];
+			}
+			fac = dx * dx;
+			pe[0] = alpha * 0.5 * fac + alphaby4 * fac * fac;
+			fprintf(fp8,"%.10f\t", pe[0]);
+			tpe += pe[0];
+			cmass += x[j];
+		}
+		dx = -x[chainlngth - 1];
+		fac = dx * dx;
+		pe[0] = alpha * 0.5 * fac + alphaby4 * fac * fac;
+
+		fprintf(fp8,"%.10f\n", pe[0]);
+		tpe += pe[0];
+		fprintf(fp5, "%d\t%.10f\n", 0, cmass);
+		cmass /= chainlngth;
+		fprintf(fp6,"\n");
+		te = tpe + tke;
+		fprintf(fp,"%d\t%.10f\n", n, te);
+		for (int k=0; k < chainlngth; k++) {
+			y[k] = x[k] - cmass;
+			fprintf(fp1,"%.10f\t", y[k]);
+		}
+		fprintf(fp1,"\n");
+		for (int k=0; k < chainlngth; k++)
+			fprintf(fp3,"%.10f\t", v[k]);
+		fprintf(fp3,"\n");
+		for (int k=0; k < chainlngth; k++)
+			fprintf(fp7,"%.10f\t", acc[k]);
+		fprintf(fp7,"\n");
+		n++; n1 = 1;
+	} // End of if (prncnt == 1) statement
+	n1++;
+} // End of (n < nprntstps) statement
+
+fclose(fp); fclose(fp1); fclose(fp3); fclose(fp5);
+fclose(fp6); fclose(fp7); fclose(fp8);
+
+fprintf(fp2, "%d\t%d\n", -1, nprntstps-1);
+for (int j = 0; j < chainlngth; j++)
+	fprintf(fp2, "%.15f\t%.15f\t%.15f\n", x[j], v[j], acc[j]);
+fclose(fp2);
+    gettimeofday(&end, NULL);
+    delta = ((end.tv_sec  - start.tv_sec) * 1000000u +
+     end.tv_usec - start.tv_usec) / 1.e6;
+    printf("Total time=%f seconds\n", delta);
+}
