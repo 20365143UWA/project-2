@@ -1,0 +1,172 @@
+All tests are run using 8 threads on an Intel core i7 with hyperthreading enabled.
+(because I can't turn it off)
+
+Architecture:          x86_64
+CPU op-mode(s):        32-bit, 64-bit
+Byte Order:            Little Endian
+CPU(s):                8
+On-line CPU(s) list:   0-7
+Thread(s) per core:    2
+Core(s) per socket:    4
+Socket(s):             1
+NUMA node(s):          1
+Vendor ID:             GenuineIntel
+CPU family:            6
+Model:                 60
+Stepping:              3
+CPU MHz:               800.000
+BogoMIPS:              4789.08
+Virtualisation:        VT-x
+L1d cache:             32K
+L1i cache:             32K
+L2 cache:              256K
+L3 cache:              6144K
+NUMA node0 CPU(s):     0-7
+
+HDD specs:
+5400 RPM
+50-80 IOPS
+
+breather.c is compiled using:
+gcc -std=c99 -fopenmp -Wall -Werror -pedantic -o breather breather.c
+
+The parallelised version is compiled using:
+gcc -std=c99 -fopenmp -Wall -Werror -pedantic -o pbreather -O3 pbreather.c
+
+Note: including the -O3 compiler option reduced the runtime for the sequential code by about 14s (down to ~5s from ~19).
+
+Omitting the -O3 option from the parallel compilation does not increase runtime significantly (<5s).
+
+Baseline performance data:
+	Sequential code executes within 19s.
+
+Priorities: 
+	Maintaining identical output to the sequential code.
+	Reducing runtime.
+	Increasing amount of code that runs in parallel.
+
+Attempted parallelising only accel. 
+	Increased runtime from ~20s to ~60s. Presuming this is from the
+	implied barrier at the end of the parallel for region.
+
+Attempted parallelising everything before the while loop. Success.
+	No noticable effect.
+
+Endeavoured to separate the fprintf calls from any workings within the
+while loop. Seeking possible code blocks to make parallel.
+	Mostly succeded in the separation. 
+
+Percieved logic error, line 178, n1=1. Increments to n1=2 immediatly after. Changed to n1=0.
+While loop now loops (nprntstps-1)*prntstps times rather than (nprntstps-1)*(prntstps-1)+2 times.
+ie: the if(prncnt == 1) print loop is called every prntstps iterations rather than every prntstps on
+the first loop followed by every (prntstps-1) on subsequent loops.
+
+While loop converted into a nested for loop. Assuming that the above assumption is correct, the output
+is preserved.
+
+All the work happens in the while (now for) loop. Converting it into a nested for 
+loop should allow parallelisation.
+Kind of. Turns out that each iteration depends on the previous.
+	Can not parallelise either of the largest for loops.
+	can still parallelise some of the smaller ones.
+
+The loop that updates x and v was parallelised.
+	Reduced runtime by ~20s (down to ~30s).
+	Still running slower than the sequential code.
+
+Variable "cmom" is never used. Calculating it is a waste of CPU cycles, removing it.
+	Runtime reduced by ~8s, down to ~22s.
+
+Attempting to make the for loop at line 138 in the original code run in parallel.
+	Issues encountered with maintaining the integrity of cmass.
+	Not solved by reduction.
+	Not solved by shared.
+	Not solved by shared and atomic updates.
+	Moved the cmass addition loop to the section executed by a single thread.
+		Output is now correct.
+
+Attempting to make the "for(o=0; o<prntstps; o++)" loop parallel.
+	Increased runtime with the ordered clause.
+	Output not preserved.
+
+Merged final velocity calculation into the accel calculation. 
+	Reduced runtime by ~2s (down to ~20s).
+	Output preserved.
+
+Attempting to merge "New positions and velocities" into accel.
+	Not much difference in time.
+	Output not preserved.
+		Idea rejected.
+
+Separated the fprintf calls into independent blocks
+	Applied #pragma single nowait to all but the last block, which just has #pragma omp single
+	Reduced runtime by ~6s down to ~14s.
+		Output partially preserved. Debugging.
+	Mistakes in output found to be from two or more threads printing a lot of lines at the same time.
+		Hardware limitation?
+	Attempting using locks.
+		Increased runtime, did not correct output.
+	Made j private. (whoops)
+		Output now preserved.
+		Runtime for 100 particles is decreased by less than a second.
+
+	Noticed that the CPU load drops sharply whenever fprintf is called.
+		Limited by HDD IOPS?
+
+Benchmarking with increasing chainlength (all values rounded to the nearest second):
+(Values followed by (est) are estimated from the fit lines)
+	chainlength 	sequential 		parallel 	with parallel fprintf 	data integrity
+	100 			18s 			20s 		20s						maintained
+	1000			188s			89s			47s						maintained
+	5000			940s (est)		271s		250s					-
+	10000			1854s			435s		390s					maintained
+	100000			18555s (est)	2005s (est)	1676s (est)				-
+
+	As chainlength increases the speed increase also increases.
+	From aproximatly the same runtime at chainlength=100 to 23% of the runtime at 10000 particles.
+		The sequential runtime is almost perfectly linear, so, extrapolating to 100000 particles, it should take on the order of 18000s.
+		Running the parallel code... I run out of HDD space at 10000 particles. (I knew I should have alocated Linux more space)
+		Getting more data to generate a fit line and extrapolate.
+
+		From the measured data, the sequential code has the following relation:
+		time=0.186*chainlength+3.3
+
+		And the parallel code has the following relation:
+		time=0.91*chainlength^(2/3)
+
+		The parallel code with fprintf in parallel has the following relation:
+		time=0.75*chainlength^(2/3)
+
+		This indicates that the parallel code will perform better for increasing values of chainlength. Which is evident from the data collected and printed above.
+
+	I would like to run tests with chainlength greater than 100000 but due to the amount of space required for the data output, it is prohibitive.
+
+	Running tests with decreasing dt yeilded the following results:
+		1/dt 		parallel
+		1000 		47
+		2000		82
+		10000 		347
+
+	This indicates a linear relation between 1/dt and execution time.
+		time=0.033*(1/dt)+14.68
+
+	The sequential code exhibits similar behaviour with a similar gradient.
+
+
+Conclusions:
+	The massive while loop (nested for loop) can not be run in parallel as each interation of it requires the previous to have been run.
+	Minimising barriers decreases runtime.
+	Because of the dependency within the for loop at line 173, the parallelisation has no significant effect for decreasing dt.
+
+Ideas for further trials, assuming memory is no issue:
+	Making the data within the for loop threadsafe. Somehow.
+		Thought about making it a two-dimensional array.
+			Dependency on previous iterations makes this prohibitive.
+
+
+Project 2:
+
+Initial observations:
+	This code did not parallelise well across multiple cores.
+	The same problems encountered for multi-threading will be
+	encountered for distributed 

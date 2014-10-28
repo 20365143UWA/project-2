@@ -1,0 +1,343 @@
+/* ilmsfxd.c: Quartic potential, Fixed boundary conditions */
+/* This program can be continued from where it left off */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <sys/time.h>
+#include <omp.h>
+
+#define chainlngth 100
+#define nsprngs (chainlngth+1)
+#define halfchain 50 /* Ignore; not used here */
+#define nmode 100  /* Ignore; not used here */
+#define nprntstps 10001 /* Number of output lines */
+							/* Also, t_end here because output is at t = 1, 2 etc. */ 
+#define dt 0.001 /* Time step */
+#define pi 3.14159 /* Ignore; not used here */
+#define beta 0.7 /* Beware! beta is the nonlinear coefficient! */
+		/* Usually alpha and beta appaears interchanged in literature */
+#define alpha 0.16 /* alpha is the coefficient of the linear term! */
+#define spcng 1.0 /* Just to make it explicit; not used in the program */
+
+#define NUMTHREADS 8
+
+double initialize(double *); /* Ignore; not used here */
+double normalmode(int ,double *, double *, double *);/* Ignore; not used here */
+
+int main() 
+{
+    struct timeval start, end;
+    double delta;
+	double a = alpha;
+	double b = beta;
+	printf("Alpha is:  %lf \n",  a);
+	printf("Beta is :  %lf \n", b);
+
+
+	FILE *fp, *fp1, *fp2, *fp3, *fp5, *fp6, *fp7, *fp8;
+	int i, j, k, n,/* n1, prncnt,*/ prntstps, o;//, debugCount1, debugCount2;
+	double v[chainlngth], x[chainlngth], tke, tpe, te;//, ke1, omegak[nmode];
+	double acc[chainlngth], ke[chainlngth], pe[nsprngs], fac, y[chainlngth];
+	double /*t, t1,*/ dx, hdt, hdt2,  /*twopi, twopisqr,*/ alphaby4, cmass;//, cmom;
+	double dxi, twodxi, dxipl1, dximn1, fac1, fac2, fac13, fac23;
+
+	prntstps = (int) (1.0 / dt);
+        gettimeofday(&start, NULL);
+        //char *buf=(char *)malloc(sizeof(char)*10000000);
+        //setvbuf(fp1, buf, _IOFBF, sizeof(buf));
+	alphaby4 = beta / 4.0;
+	fp = fopen("ptoten.dat","w");
+	fp1 = fopen("pstrsh.dat","w");
+	fp3 = fopen("pvelsh.dat","w");
+	fp5 = fopen("pcmass.dat","w");
+	fp2 = fopen("prestart.dat","w");
+	fp6 = fopen("pke.dat","w");
+	fp7 = fopen("pacce.dat","w");
+	fp8 = fopen("ppe.dat","w");
+	
+	#pragma omp parallel shared(x, acc, v, ke, pe, y, fp, fp1, fp2, fp3, fp5, fp6, fp7, fp8) num_threads(NUMTHREADS)
+	{
+		/* Initialize the position, velocity, acceleration arrays */
+		#pragma omp for private(i)
+		for (i=0; i < chainlngth; i++) 
+		{ 
+			x[i] = 0.0;
+			acc[i] = 0.0;
+			v[i] = 0.0;
+		}
+
+		/*
+		Initial perturbation at the center of the chain and it is a double particle perturbation (EVEN Parity)
+		*/
+		#pragma omp task shared(x)
+		x[50] = -0.98;
+		#pragma omp task shared(x)
+		x[51] = +0.98;	// Even Parity
+		#pragma omp task
+		dx = tke = tpe = te = 0.0;
+		#pragma omp barrier
+
+		#pragma omp for private(i, j, dx) reduction(+:tke,tpe)
+		for (i=0; i < chainlngth; i++) 
+		{
+			ke[i] = 0.5 * v[i] * v[i];
+			tke += ke[i];
+			j = i-1;
+			if (j == -1) { 
+				dx = x[i];
+			} else {
+				dx = x[i] - x[j]; 
+			}
+			fac = dx * dx;
+			pe[i] = alpha * 0.5 * fac + alphaby4 * fac * fac;
+			
+			tpe += pe[i];
+
+		}
+
+		#pragma omp single
+		{
+			for(i=0; i<chainlngth; i++)
+			{
+				fprintf(fp8,"%.10f\t", pe[i]);
+				fprintf(fp6,"%.10f\t", ke[i]);
+			}
+		}
+
+		
+		
+		dx = -x[chainlngth - 1];
+		
+		fac = dx * dx;
+
+		pe[chainlngth] = alpha * 0.5 * fac + alphaby4 * fac * fac;
+
+		//Send each of the nowaits to a different computer.
+		//Make sure to send the future nowaits to the same computers.
+		//File integrity is key!
+
+		#pragma omp single nowait
+		{
+			fprintf(fp8,"%.10f\n", pe[i]);
+		}
+
+		#pragma omp single nowait
+		{
+			tpe += pe[i];
+			//printf("tpe= %lf\npe[i]= %lf\n", tpe, pe[i]);
+			fprintf(fp6,"\n");
+			te = tpe + tke; i = 0;
+			fprintf(fp,"%d\t%.10f\n", i, te);
+		}
+
+		#pragma omp single private(k) nowait
+		{
+			for (k=0; k < chainlngth; k++) 
+				{fprintf(fp1,"%.10f\t", x[k]); }
+			fprintf(fp1,"\n"); 
+		}
+
+		#pragma omp single private(k) nowait
+		{
+			for (k=0; k < chainlngth; k++) 
+				{fprintf(fp3,"%.10f\t", v[k]);} 
+			fprintf(fp3,"\n"); 
+		}
+
+		#pragma omp single private(k) nowait
+		{
+			for (k=0; k < chainlngth; k++) 
+				{fprintf(fp7,"%.10f\t", acc[k]); }
+			fprintf(fp7,"\n"); 
+		}
+
+		#pragma omp single nowait
+		{hdt = 0.5 * dt;
+		hdt2 = dt * hdt; }
+	}
+
+	#pragma omp parallel shared(x, acc, v, ke, pe, y, fp, fp1, fp2, fp3, fp5, fp6, fp7, fp8) private(n, o) num_threads(NUMTHREADS)
+	{
+		for(n=1; n<((nprntstps)); n++) 
+		{ 
+				#pragma omp single nowait
+				{
+					tke = tpe = te = dx = 0.0;  //reset all variables
+					cmass = 0.0;
+				}
+
+				for(o=0; o<prntstps; o++)
+				{
+
+					/* New positions and velocities */
+
+					//Split the position and velocity calcs.
+					//Pass them to different computers.
+
+					#pragma omp for private(j)
+					for (j = 0; j < chainlngth; j++) 
+					{
+						x[j] += dt * v[j] + hdt2 * acc[j];
+						v[j] += hdt * acc[j];
+					}
+
+					/* new accelerations */
+
+					//Distribute over different computers.
+					//Then threads.
+					#pragma omp for private( i, j, k, dxi, twodxi, dxipl1, dximn1, fac, fac1, fac2, fac13, fac23)// shared(x, acc)
+					for (i = 0; i < chainlngth; i++) 
+					{
+						j = i - 1;
+						k = i + 1;
+						if (j == -1) 
+						{
+							dximn1 = 0.0;
+						} 
+						else 
+						{
+							dximn1 = x[j];
+						}
+						if (k == chainlngth) 
+						{
+							dxipl1 = 0.0;
+						} 
+						else 
+						{
+							dxipl1 = x[k];
+						}
+
+						dxi = x[i];
+						twodxi = 2.0 * dxi;
+						fac = dxipl1 + dximn1 - twodxi;
+						fac1 = dxipl1 - dxi;
+						fac2 = dxi - dximn1;
+						fac13 = fac1 * fac1 * fac1;
+						fac23 = fac2 * fac2 * fac2;
+						acc[i] = alpha * fac + beta * (fac13 - fac23); //Calculate new acceleration
+						v[i] += hdt * acc[i]; //Calculate final velocity
+					}
+
+				}
+
+				/* Kinetic energies */
+
+				  //if 100% done, print all
+				
+				#pragma omp for private(j, fac, dx) reduction(+:tpe, tke)
+					for (j = 0; j < chainlngth; j++) 
+					{
+						ke[j] = 0.5 * v[j] * v[j]; 
+						if (j == 0) { 
+							dx = x[j];
+						} else {
+							dx = x[j] - x[j-1]; 
+						}
+						fac = dx * dx;
+						pe[j] = alpha * 0.5 * fac + alphaby4 * fac * fac;
+						tpe += pe[j];
+						tke += ke[j];
+					}
+
+				#pragma omp single nowait
+				{
+					dx = -x[chainlngth - 1];
+					fac = dx * dx;
+					pe[chainlngth] = alpha * 0.5 * fac + alphaby4 * fac * fac;
+					tpe += pe[chainlngth];
+					te = tpe + tke;
+					fprintf(fp,"%d\t%.10f\n", n, te);
+				}
+
+				
+				/* This section gets limited by HDD speed
+					using a faster HDD or SSD with an increased
+					number of IOPS will increase the speed */
+
+				//Send each NOWAIT for loop to a different computer?
+					
+			#pragma omp single private(j) nowait
+				{
+					
+					
+					for (j=0; j < chainlngth; j++) 
+					{
+						fprintf(fp6,"%.10f\t", ke[j]);
+					}
+					fprintf(fp6,"\n");
+
+				}
+
+				#pragma omp single private(j) nowait
+				{
+					for (j=0; j < chainlngth; j++) 
+					{
+						fprintf(fp3,"%.10f\t", v[j]);
+					}
+					fprintf(fp3,"\n");
+				}
+
+				#pragma omp single private(j) nowait
+				{
+					for (j=0; j < chainlngth; j++) 
+					{
+						fprintf(fp7,"%.10f\t", acc[j]);
+					}
+					fprintf(fp7,"\n");
+				}
+
+				#pragma omp single private(j) nowait
+				{
+					for(j=0;j<chainlngth;j++)
+					{
+						fprintf(fp8,"%.10f\t", pe[j]);
+					}
+
+					fprintf(fp8,"%.10f\n", pe[chainlngth]);
+				}
+
+				#pragma omp single private(j)
+				{
+					for (j = 0; j < chainlngth; j++)
+					{
+						cmass += x[j];
+					}
+
+					i=0;
+					fprintf(fp5, "%d\t%.10f\n", i, cmass);
+					cmass /= chainlngth;
+
+					for (j=0; j < chainlngth; j++) 
+					{
+						y[j] = x[j] - cmass;
+						fprintf(fp1,"%.10f\t", y[j]);
+					}
+					fprintf(fp1,"\n");
+				}
+			
+
+				
+
+			
+		
+		}
+	}
+
+	fprintf(fp2, "%d\t%d\n", i-1, nprntstps-1);
+
+	for (j = 0; j < chainlngth; j++) 
+		{fprintf(fp2, "%.15f\t%.15f\t%.15f\n", x[j], v[j], acc[j]);}
+
+
+	fclose(fp); fclose(fp1); fclose(fp2); fclose(fp3); fclose(fp5); 
+	fclose(fp6); fclose(fp7); fclose(fp8);
+
+
+  gettimeofday(&end, NULL);
+  delta = ((end.tv_sec  - start.tv_sec) * 1000000u + 
+  end.tv_usec - start.tv_usec) / 1.e6;
+
+  printf("Total time=%f seconds\n", delta);
+  exit(EXIT_SUCCESS);
+}
