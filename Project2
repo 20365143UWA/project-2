@@ -20,6 +20,8 @@
 #define alpha 0.16 /* alpha is the coefficient of the linear term! */
 #define spcng 1.0 /* Just to make it explicit; not used in the program */
 
+#define MASTER 0 //Master thread and rank is zero
+
 double initialize(double *); /* Ignore; not used here */
 double normalmode(int ,double *, double *, double *);/* Ignore; not used here */
 
@@ -29,12 +31,10 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
     double delta;
 	double a = alpha;
 	double b = beta;
-	printf("Alpha is:  %lf \n",  a);
-	printf("Beta is :  %lf \n", b);
-
 
 	FILE *fp, *fp1, *fp2, *fp3, *fp5, *fp6, *fp7, *fp8;
 	int i, j, k, n,/* n1, prncnt,*/ prntstps, o, rank, size;//, debugCount1, debugCount2;
+	int fpid, fp1id, fp3id, fp4id, fp5id, fp6id, fp7id, fp8id;
 	double v[chainlngth], x[chainlngth], tke, tpe, te;//, ke1, omegak[nmode];
 	double acc[chainlngth], ke[chainlngth], pe[nsprngs], fac, y[chainlngth];
 	double /*t, t1,*/ dx, hdt, hdt2,  /*twopi, twopisqr,*/ alphaby4, cmass;//, cmom;
@@ -42,8 +42,6 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 
 	prntstps = (int) (1.0 / dt);
         gettimeofday(&start, NULL);
-        //char *buf=(char *)malloc(sizeof(char)*10000000);
-        //setvbuf(fp1, buf, _IOFBF, sizeof(buf));
 	alphaby4 = beta / 4.0;
 	fp = fopen("ptoten.dat","w");
 	fp1 = fopen("pstrsh.dat","w");
@@ -61,6 +59,32 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 		//the current process is
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 		MPI_Comm_size(MPI_COMM_WORLD, &size);
+		if(rank==MASTER&&omp_get_thread_num()==0)//Only to be executed by the master thread on the master computer
+		{
+			printf("Alpha is:  %lf \n",  a);
+			printf("Beta is :  %lf \n", b);
+		}
+		if(size>=7) //If there are enough processes for one per file
+		{
+			fpid=0;
+			fp1id=1;
+			fp3id=2;
+			fp4id=3;
+			fp5id=4;
+			fp6id=5;
+			fp7id=6;
+			fp8id=7;
+		}else if(size>=4) //If there are only half the required processes
+		{
+			fpid=fp1id=0;
+			fp3id=fp4id=1;
+			fp5id=fp6id=2;
+			fp7id=fp8id=3;
+		}else //Print everything on the Master
+		{
+			//Do not question the i. It is vital.
+			i=fpid=fp1id=fp3id=fp4id=fp5id=fp6id=fp7id=fp8id=MASTER;
+		}
 		/* Initialize the position, velocity, acceleration arrays */
 		#pragma omp for private(i)
 		for (i=0; i < chainlngth; i++) 
@@ -490,20 +514,23 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 	}
 	MPI_Finalize(); //End MPI region
 
-	fprintf(fp2, "%d\t%d\n", i-1, nprntstps-1);
+	if(rank==MASTER&&omp_get_thread_num()==0) //Only to be executed by the master thread on the master computer
+	{
+		fprintf(fp2, "%d\t%d\n", i-1, nprntstps-1);
 
-	for (j = 0; j < chainlngth; j++) 
-		{fprintf(fp2, "%.15f\t%.15f\t%.15f\n", x[j], v[j], acc[j]);}
-
-
-	fclose(fp); fclose(fp1); fclose(fp2); fclose(fp3); fclose(fp5); 
-	fclose(fp6); fclose(fp7); fclose(fp8);
+		for (j = 0; j < chainlngth; j++) 
+			{fprintf(fp2, "%.15f\t%.15f\t%.15f\n", x[j], v[j], acc[j]);}
 
 
-        gettimeofday(&end, NULL);
-        delta = ((end.tv_sec  - start.tv_sec) * 1000000u + 
-         end.tv_usec - start.tv_usec) / 1.e6;
+		fclose(fp); fclose(fp1); fclose(fp2); fclose(fp3); fclose(fp5); 
+		fclose(fp6); fclose(fp7); fclose(fp8);
 
-        printf("Total time=%f seconds\n", delta);
+
+	        gettimeofday(&end, NULL);
+	        delta = ((end.tv_sec  - start.tv_sec) * 1000000u + 
+	         end.tv_usec - start.tv_usec) / 1.e6;
+	
+	        printf("Total time=%f seconds\n", delta);
+    	}
         exit(EXIT_SUCCESS);
 }
