@@ -47,9 +47,9 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 	alphaby4 = beta / 4.0;
 	fp = fopen("ptoten.dat","w");
 	fp1 = fopen("pstrsh.dat","w");
+	fp2 = fopen("prestart.dat","w");
 	fp3 = fopen("pvelsh.dat","w");
 	fp5 = fopen("pcmass.dat","w");
-	fp2 = fopen("prestart.dat","w");
 	fp6 = fopen("pke.dat","w");
 	fp7 = fopen("pacce.dat","w");
 	fp8 = fopen("ppe.dat","w");
