@@ -25,7 +25,7 @@
 double initialize(double *); /* Ignore; not used here */
 double normalmode(int ,double *, double *, double *);/* Ignore; not used here */
 
-int main() 
+int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 {
     struct timeval start, end;
     double delta;
@@ -56,7 +56,7 @@ int main()
 	fp7 = fopen("pacce.dat","w");
 	fp8 = fopen("ppe.dat","w");
 
-	
+	MPI_Init(&argc, &argv); //Begin MPI region
 	#pragma omp parallel shared(x, acc, v, ke, pe, y, fp, fp1, fp2, fp3, fp5, fp6, fp7, fp8) num_threads(NUMTHREADS)
 	{
 	    //start=time(NULL);
@@ -487,6 +487,7 @@ int main()
 
 		}
 	}
+	MPI_Finalize(); //End MPI region
 
 	fprintf(fp2, "%d\t%d\n", i-1, nprntstps-1);
 
