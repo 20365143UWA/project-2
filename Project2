@@ -6,6 +6,7 @@
 #include <math.h>
 #include <sys/time.h>
 #include <omp.h>
+#include "mpi.h"
 
 #define chainlngth 100
 #define nsprngs (chainlngth+1)
