@@ -13,7 +13,7 @@
 #define halfchain 50 /* Ignore; not used here */
 #define nmode 100  /* Ignore; not used here */
 #define nprntstps 10001 /* Number of output lines */
-							/* Also, t_end here because output is at t = 1, 2 etc. */ 
+		/* Also, t_end here because output is at t = 1, 2 etc. */ 
 #define dt 0.001 /* Time step */
 #define pi 3.14159 /* Ignore; not used here */
 #define beta 0.7 /* Beware! beta is the nonlinear coefficient! */
@@ -22,27 +22,33 @@
 #define spcng 1.0 /* Just to make it explicit; not used in the program */
 
 #define MASTER 0 //Master thread and rank is zero
+//#define NUMTHREADS 8
 
 double initialize(double *); /* Ignore; not used here */
 double normalmode(int ,double *, double *, double *);/* Ignore; not used here */
+int workLoop(int, int, double *, double *, double *, double, double); //Contains the main work-intensive loop
 
-int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
+int main(int argc, char *argv[]) 
 {
     struct timeval start, end;
     double delta;
 	double a = alpha;
 	double b = beta;
 
+
+
 	FILE *fp, *fp1, *fp2, *fp3, *fp5, *fp6, *fp7, *fp8;
-	int i, j, k, n,/* n1, prncnt,*/ prntstps, o, rank, size;//, debugCount1, debugCount2;
-	int fpid, fp1id, fp3id, fp4id, fp5id, fp6id, fp7id, fp8id;
+	int i, j, k, n,/* n1, prncnt,*/ prntstps, size, rank;//, debugCount1, debugCount2;
+	int fpid, fp1id, fp3id, fp4id, fp5id, fp6id, fp7id, fp8id;//, chunksize;
 	double v[chainlngth], x[chainlngth], tke, tpe, te;//, ke1, omegak[nmode];
 	double acc[chainlngth], ke[chainlngth], pe[nsprngs], fac, y[chainlngth];
 	double /*t, t1,*/ dx, hdt, hdt2,  /*twopi, twopisqr,*/ alphaby4, cmass;//, cmom;
-	double dxi, twodxi, dxipl1, dximn1, fac1, fac2, fac13, fac23;
+	//double dxi, twodxi, dxipl1, dximn1, fac1, fac2, fac13, fac23;
 
 	prntstps = (int) (1.0 / dt);
         gettimeofday(&start, NULL);
+        //char *buf=(char *)malloc(sizeof(char)*10000000);
+        //setvbuf(fp1, buf, _IOFBF, sizeof(buf));
 	alphaby4 = beta / 4.0;
 	fp = fopen("ptoten.dat","w");
 	fp1 = fopen("pstrsh.dat","w");
@@ -53,10 +59,13 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 	fp7 = fopen("pacce.dat","w");
 	fp8 = fopen("ppe.dat","w");
 
+	
+
 	MPI_Init(&argc, &argv); //Begin MPI region
-	#pragma omp parallel shared(x, acc, v, ke, pe, y, fp, fp1, fp3, fp5, fp6, fp7, fp8)
+	#pragma omp parallel shared(x, acc, v, ke, pe, y, fp, fp1, fp3, fp5, fp6, fp7, fp8)// num_threads(NUMTHREADS)
 	{
-	   	//Get the size of the group and which rank in the group
+
+		//Get the size of the group and which rank in the group
 		//the current process is
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 		MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -64,28 +73,9 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 		{
 			printf("Alpha is:  %lf \n",  a);
 			printf("Beta is :  %lf \n", b);
+			printf("Size of cluster:  %d\n", size);
 		}
-		if(size>=7) //If there are enough processes for one per file
-		{
-			fpid=0;
-			fp1id=1;
-			fp3id=2;
-			fp4id=3;
-			fp5id=4;
-			fp6id=5;
-			fp7id=6;
-			fp8id=7;
-		}else if(size>=4) //If there are only half the required processes
-		{
-			fpid=fp1id=0;
-			fp3id=fp4id=1;
-			fp5id=fp6id=2;
-			fp7id=fp8id=3;
-		}else //Print everything on the Master
-		{
-			//Do not question the i. It is vital.
-			i=fpid=fp1id=fp3id=fp4id=fp5id=fp6id=fp7id=fp8id=MASTER;
-		}
+			
 		/* Initialize the position, velocity, acceleration arrays */
 		#pragma omp for private(i)
 		for (i=0; i < chainlngth; i++) 
@@ -126,25 +116,30 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 
 		}
 
-	
-		#pragma omp single
+		
+		//Each of the fprintf calls or call loops has been assigned
+		//to a single thread and the rest of the threads have been
+		//told to move onto the next block.
+		//tldr: As many barriers have been removed as possible.
+		#pragma omp single private(i) nowait
 		{
 			for(i=0; i<chainlngth; i++)
 			{
 				fprintf(fp8,"%.10f\t", pe[i]);
-				fprintf(fp6,"%.10f\t", ke[i]);
 			}
 		}
 
+		#pragma omp single private(i) //nowait 
+		{
+			for(i=0; i<chainlngth; i++)
+			{
+				fprintf(fp6,"%.10f\t", ke[i]);
+			}
+		}
 		
-		
-		dx = -x[chainlngth - 1];
-		
+		dx = -x[chainlngth - 1];	
 		fac = dx * dx;
-
 		pe[chainlngth] = alpha * 0.5 * fac + alphaby4 * fac * fac;
-
-		//#pragma omp barrier
 
 		//Send each of the nowaits to a different computer.
 		//Make sure to send the future nowaits to the same computers.
@@ -190,70 +185,18 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 
 	}
 
-	#pragma omp parallel shared(x, acc, v, ke, pe, y, fp, fp1, fp3, fp5, fp6, fp7, fp8) private(n, o)
+	#pragma omp parallel shared(x, acc, v, ke, pe, y, fp, fp1, fp3, fp5, fp6, fp7, fp8) private(n)// num_threads(NUMTHREADS)
 	{
 
 
-	//Initial loop of prntstps times.
-	#pragma omp single nowait
+		//Initial loop of prntstps times.
+		#pragma omp single nowait
 		{
 			tke = tpe = te = dx = 0.0;  //reset all variables
 			cmass = 0.0;
 		}
 
-		for(o=0; o<prntstps; o++)
-		{
-
-			/* New positions and velocities */
-
-			//Split the position and velocity calcs.
-			//Pass them to different computers.
-
-			#pragma omp for private(j)
-			for (j = 0; j < chainlngth; j++) 
-			{
-				x[j] += dt * v[j] + hdt2 * acc[j];
-				v[j] += hdt * acc[j];
-			}
-
-			/* new accelerations */
-
-			//Distribute over different computers.
-			//Then threads.
-			#pragma omp for private( i, j, k, dxi, twodxi, dxipl1, dximn1, fac, fac1, fac2, fac13, fac23)// shared(x, acc)
-			for (i = 0; i < chainlngth; i++) 
-			{
-				j = i - 1;
-				k = i + 1;
-				if (j == -1) 
-				{
-					dximn1 = 0.0;
-				} 
-				else 
-				{
-					dximn1 = x[j];
-				}
-				if (k == chainlngth) 
-				{
-					dxipl1 = 0.0;
-				} 
-				else 
-				{
-					dxipl1 = x[k];
-				}
-
-				dxi = x[i];
-				twodxi = 2.0 * dxi;
-				fac = dxipl1 + dximn1 - twodxi;
-				fac1 = dxipl1 - dxi;
-				fac2 = dxi - dximn1;
-				fac13 = fac1 * fac1 * fac1;
-				fac23 = fac2 * fac2 * fac2;
-				acc[i] = alpha * fac + beta * (fac13 - fac23); //Calculate new acceleration
-				v[i] += hdt * acc[i]; //Calculate final velocity
-			}
-
-		}
+		workLoop(0, prntstps, x, v, acc, hdt, hdt2);
 
 		/* Kinetic energies */
 
@@ -274,7 +217,7 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 				tke += ke[j];
 			}
 
-		#pragma omp single nowait
+		#pragma omp single// nowait
 		{
 			dx = -x[chainlngth - 1];
 			fac = dx * dx;
@@ -291,7 +234,7 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 
 		//Send each NOWAIT for loop to a different computer?
 			
-	#pragma omp single private(j) nowait
+		#pragma omp single private(j) nowait
 		{
 			
 			
@@ -351,7 +294,7 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 			fprintf(fp1,"\n");
 		}
 
-	//Begin the reduced looping! (prntstps-1)
+		//Begin the reduced looping! (prntstps-1)
 
 		for(n=2; n<((nprntstps)); n++) 
 		{ 
@@ -361,59 +304,7 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 					cmass = 0.0;
 				}
 
-				for(o=0; o<prntstps-1; o++)
-				{
-
-					/* New positions and velocities */
-
-					//Split the position and velocity calcs.
-					//Pass them to different computers.
-
-					#pragma omp for private(j)
-					for (j = 0; j < chainlngth; j++) 
-					{
-						x[j] += dt * v[j] + hdt2 * acc[j];
-						v[j] += hdt * acc[j];
-					}
-
-					/* new accelerations */
-
-					//Distribute over different computers.
-					//Then threads.
-					#pragma omp for private( i, j, k, dxi, twodxi, dxipl1, dximn1, fac, fac1, fac2, fac13, fac23)// shared(x, acc)
-					for (i = 0; i < chainlngth; i++) 
-					{
-						j = i - 1;
-						k = i + 1;
-						if (j == -1) 
-						{
-							dximn1 = 0.0;
-						} 
-						else 
-						{
-							dximn1 = x[j];
-						}
-						if (k == chainlngth) 
-						{
-							dxipl1 = 0.0;
-						} 
-						else 
-						{
-							dxipl1 = x[k];
-						}
-
-						dxi = x[i];
-						twodxi = 2.0 * dxi;
-						fac = dxipl1 + dximn1 - twodxi;
-						fac1 = dxipl1 - dxi;
-						fac2 = dxi - dximn1;
-						fac13 = fac1 * fac1 * fac1;
-						fac23 = fac2 * fac2 * fac2;
-						acc[i] = alpha * fac + beta * (fac13 - fac23); //Calculate new acceleration
-						v[i] += hdt * acc[i]; //Calculate final velocity
-					}
-
-				}
+				workLoop(0, prntstps-1, x, v, acc, hdt, hdt2);
 
 				/* Kinetic energies */
 
@@ -451,7 +342,7 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 
 				//Send each NOWAIT for loop to a different computer?
 					
-			#pragma omp single private(j) nowait
+				#pragma omp single private(j) nowait
 				{
 					
 					
@@ -513,7 +404,7 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 
 		}
 	}
-	MPI_Finalize(); //End MPI region
+	MPI_Finalize(); //End MPI
 
 	if(rank==MASTER&&omp_get_thread_num()==0) //Only to be executed by the master thread on the master computer
 	{
@@ -527,11 +418,73 @@ int main(int argc, char *argv[]) //Dummy inputs needed for OpenMPI
 		fclose(fp6); fclose(fp7); fclose(fp8);
 
 
-	        gettimeofday(&end, NULL);
-	        delta = ((end.tv_sec  - start.tv_sec) * 1000000u + 
-	         end.tv_usec - start.tv_usec) / 1.e6;
-	
-	        printf("Total time=%f seconds\n", delta);
-    	}
+        gettimeofday(&end, NULL);
+        delta = ((end.tv_sec  - start.tv_sec) * 1000000u + 
+         end.tv_usec - start.tv_usec) / 1.e6;
+
+        printf("Total time=%f seconds\n", delta);
+    }
         exit(EXIT_SUCCESS);
+}
+
+int workLoop(int start, int numLoops, double *x, double *v, double *acc, double hdt, double hdt2)
+{
+
+	double dxi, twodxi, dxipl1, dximn1, fac, fac1, fac2, fac13, fac23;
+	int j, i, k;
+	for(int o=start; o<numLoops; o++)
+	{
+
+		/* New positions and velocities */
+
+		//Split the position and velocity calcs.
+		//Pass them to different computers.
+
+		#pragma omp for private(j)
+		for (j = 0; j < chainlngth; j++) 
+		{
+			x[j] += dt * v[j] + hdt2 * acc[j];
+			v[j] += hdt * acc[j];
+		}
+
+		/* new accelerations */
+
+		//Distribute over different computers.
+		//Then threads.
+		#pragma omp for private(i, j, k, dxi, twodxi, dxipl1, dximn1, fac, fac1, fac2, fac13, fac23)// shared(x, acc)
+		for (i = 0; i < chainlngth; i++) 
+		{
+			j = i - 1;
+			k = i + 1;
+			if (j == -1) 
+			{
+				dximn1 = 0.0;
+			} 
+			else 
+			{
+				dximn1 = x[j];
+			}
+			if (k == chainlngth) 
+			{
+				dxipl1 = 0.0;
+			} 
+			else 
+			{
+				dxipl1 = x[k];
+			}
+
+			dxi = x[i];
+			twodxi = 2.0 * dxi;
+			fac = dxipl1 + dximn1 - twodxi;
+			fac1 = dxipl1 - dxi;
+			fac2 = dxi - dximn1;
+			fac13 = fac1 * fac1 * fac1;
+			fac23 = fac2 * fac2 * fac2;
+			acc[i] = alpha * fac + beta * (fac13 - fac23); //Calculate new acceleration
+			v[i] += hdt * acc[i]; //Calculate final velocity
+		}
+
+	}
+
+	return 1;
 }
